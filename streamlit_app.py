@@ -139,6 +139,16 @@ def render_info_box(title: str, description: str, icon: str = "ℹ️"):
     """, unsafe_allow_html=True)
 
 
+def render_warning_box(title: str, description: str):
+    """Render a warning box for input and analysis guardrails."""
+    st.markdown(f"""
+        <div class="warning-box">
+            <strong>⚠️ {title}</strong><br/>
+            {description}
+        </div>
+    """, unsafe_allow_html=True)
+
+
 def render_metric_card(label: str, value: str, color: str = None):
     """Render a metric card."""
     if color is None:
@@ -308,6 +318,29 @@ with tabs[1]:
         total_cost = sum(t.annual_cost_k for t in selected_tools)
         utilization = round((total_cost / budget_k) * 100)
 
+        input_warnings = []
+        if total_cost > budget_k:
+            input_warnings.append(
+                f"Selected tool spend exceeds the budget by {round(total_cost - budget_k)}K ("
+                f"{utilization}% of budget). Consider removing low-impact licenses or increasing budget."
+            )
+
+        selected_weights = COMPLIANCE_DOMAIN_WEIGHTS.get(compliance, {})
+        covered_domains = set(d for tool in selected_tools for d in tool.coverage)
+        if compliance != "None" and all(selected_weights.get(domain, 0) == 0 for domain in covered_domains):
+            input_warnings.append(
+                f"Selected tools do not cover any compliance-weighted domains for {compliance}. "
+                "This may understate regulatory exposure."
+            )
+
+        if len(selected_tools) >= 7:
+            input_warnings.append(
+                "A high number of tools selected may indicate a complex stack with hidden integration and management risk."
+            )
+
+        for warning in input_warnings:
+            render_warning_box("Input Guardrail", warning)
+
         summary_cols = st.columns(4)
         with summary_cols[0]:
             render_metric_card("Tools Selected", str(len(selected_tools)))
@@ -336,13 +369,15 @@ with tabs[1]:
                     st.session_state.analysis = analysis
                     st.session_state.roadmap = roadmap
 
+                    if analysis.warnings:
+                        for warning in analysis.warnings:
+                            render_warning_box("Analysis Guardrail", warning)
                     st.success("✅ Analysis complete! Check the Results tab.")
                 except Exception as e:
                     st.error(f"❌ Analysis failed: {str(e)}")
     else:
         st.info("👈 Select at least one tool to proceed with analysis.")
 
-# ══════════════════════════════════════════════════════════════════════════════
 # TAB 3: Analysis Results
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -389,6 +424,25 @@ with tabs[2]:
                 f"{analysis.compliance_score}/100",
                 score_to_color(analysis.compliance_score)
             )
+
+        st.divider()
+        st.subheader("Explainability & Confidence")
+        st.markdown(
+            (
+                f"**Overall Confidence:** {analysis.overall_confidence}  "
+                "This label reflects how strongly the stacked score aligns with the selected coverage, overlaps, and compliance weighting."
+            )
+        )
+
+        if analysis.explainability:
+            with st.expander("Why this score?", expanded=True):
+                for line in analysis.explainability:
+                    st.markdown(f"- {line}")
+
+        if analysis.warnings:
+            st.markdown("**Guardrail warnings:**")
+            for warning in analysis.warnings:
+                render_warning_box("Analysis Guardrail", warning)
 
         st.divider()
 
@@ -476,6 +530,7 @@ with tabs[2]:
                         DOMAIN_DISPLAY[d] for d in overlap.shared_domains
                     )
                     st.markdown(f"**Shared Coverage:** {shared_domains}")
+                    st.markdown(f"**Confidence:** {overlap.confidence} — {overlap.confidence_reason}")
                     st.markdown(
                         f"*Recommendation: Retire the cheaper tool to recover ~${overlap.estimated_wasted_cost_k}K annually.*"
                     )
@@ -498,8 +553,10 @@ with tabs[2]:
                 for gap in high_gaps:
                     recs = ", ".join(gap.recommended_tools[:2]) if gap.recommended_tools else "Evaluate vendors"
                     st.markdown(
-                        f"- **{DOMAIN_DISPLAY[gap.domain]}** → Recommended: {recs}"
+                        f"- **{DOMAIN_DISPLAY[gap.domain]}** → Recommended: {recs}  \
+                          (Confidence: {gap.confidence})"
                     )
+                    st.markdown(f"  - {gap.confidence_reason}")
 
             if medium_gaps:
                 st.markdown("**🟡 Medium Priority:**")
